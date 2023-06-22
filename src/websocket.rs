@@ -1,7 +1,10 @@
+use serde_json::json;
+use tokio::runtime::Runtime;
 use tungstenite::{connect, Message};
 use url::Url;
 
-fn subscribe_to_stream(symbol: &str, depth: u32) {
+#[allow(dead_code)]
+async fn subscribe_to_binance_stream(symbol: String, depth: u32) {
     // WebSocket server URL
     let url = Url::parse("wss://stream.binance.com:9443/ws").expect("Failed to parse URL");
 
@@ -9,33 +12,61 @@ fn subscribe_to_stream(symbol: &str, depth: u32) {
     let (mut socket, _) = connect(url).expect("Failed to connect");
 
     // Construct the message
-    let message = format!(
-        r#"
-        {{
-            "method": "SUBSCRIBE",
-            "params": [
-                "{}@depth{}"
-            ],
-            "id": 1
-        }}
-        "#,
-        symbol, depth
-    );
+    let message = json!({
+        "method": "SUBSCRIBE",
+        "params": [
+            format!("{}@depth{}", symbol, depth)
+        ],
+        "id": 1
+    });
 
-    println!("{:#?}", message);
+    // Connect to the WebSocket server
+    let message_json = serde_json::to_string(&message).expect("Failed to serialize message");
+
     // Send the message as a text frame
     socket
-        .write_message(Message::Text(message.into()))
+        .write_message(Message::Text(message_json.into()))
         .expect("Failed to send message");
 
     // Receive and handle messages from the WebSocket server
     loop {
         let msg = socket.read_message().expect("Failed to receive message");
-        println!("Received message: {:#?}", msg);
-        // Add your own logic here to handle the received messages
+        println!("Received message from Binance: {:#?}", msg);
+    }
+}
 
-        // Wait for one minute before listening to the next stream
-        // thread::sleep(Duration::from_secs(60));
+#[allow(dead_code)]
+async fn subscribe_to_bitstamp_stream(symbol: String) {
+    // WebSocket server URL
+    let url = Url::parse("wss://ws.bitstamp.net/").expect("Failed to parse URL");
+
+    // Connect to the WebSocket server
+    let (mut socket, _) = connect(url).expect("Failed to connect");
+
+    // Construct the message
+    let channel = format!("detail_order_book_{}", symbol);
+    let message = format!(
+        r#"
+        {{
+            "event": "bts:subscribe",
+            "data": {{
+                "channel": "{}"
+            }}
+        }}
+        "#,
+        channel
+    );
+
+    println!("message: {:#?}", message);
+
+    // Send the message as a text frame
+    socket
+        .write_message(Message::Text(message.into()))
+        .expect("Failed to send message");
+    // Receive and handle messages from the WebSocket server
+    loop {
+        let msg = socket.read_message().expect("Failed to receive message");
+        println!("Received message from Bitstamp: {:#?}", msg);
     }
 }
 
@@ -46,9 +77,21 @@ fn main() {
         println!("Usage: cargo run -- <symbol> [depth]");
         return;
     }
-    let symbol = &args[1];
+    let symbol = args[1].clone();
     let depth = args.get(2).and_then(|d| d.parse().ok()).unwrap_or(10);
 
-    // Subscribe to the stream
-    subscribe_to_stream(symbol, depth);
+    // Create a tokio runtime
+    let rt = Runtime::new().expect("Failed to create Tokio runtime");
+
+    // Spawn the tasks for subscribing to the streams concurrently
+    rt.spawn(subscribe_to_binance_stream(symbol.clone(), depth));
+    rt.spawn(subscribe_to_bitstamp_stream(symbol));
+
+    // Run the tokio runtime
+    rt.block_on(async {
+        // Keep the main thread alive
+        tokio::signal::ctrl_c()
+            .await
+            .expect("Failed to listen for Ctrl+C");
+    });
 }
