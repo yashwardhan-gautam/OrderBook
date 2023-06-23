@@ -1,6 +1,7 @@
 use serde::Deserialize;
-use serde_json::{json, Value};
-use tungstenite::{connect, Message};
+use serde_json::Value;
+use tungstenite::client::AutoStream;
+use tungstenite::{connect, Message, WebSocket};
 use url::Url;
 
 #[derive(Debug, Deserialize)]
@@ -101,166 +102,96 @@ fn sort_and_select_levels(levels: &[Level], depth: usize, ascending: bool) -> Ve
     }
 }
 
-fn process_binance_message(message_text: &str, depth: usize) -> Option<OrderBook> {
+fn process_order_book_message(
+    message_text: &str,
+    exchange: &str,
+    depth: usize,
+) -> Option<OrderBook> {
     if let Ok(result) = serde_json::from_str::<Value>(message_text) {
-        let bids: Vec<Level> = if let Some(bids) = result["bids"].as_array() {
-            bids.iter()
-                .filter_map(|bid| {
-                    if let Some(price) = bid
-                        .get(0)
-                        .and_then(|v| v.as_str().and_then(|s| s.parse().ok()))
-                    {
-                        if let Some(amount) = bid
-                            .get(1)
+        let mut data = result.get("data").cloned();
+        if data.is_none() {
+            data = Some(result);
+        }
+
+        if let Some(data) = data {
+            let bids: Vec<Level> = if let Some(bids) = data["bids"].as_array() {
+                bids.iter()
+                    .filter_map(|bid| {
+                        if let Some(price) = bid
+                            .get(0)
                             .and_then(|v| v.as_str().and_then(|s| s.parse().ok()))
                         {
-                            return Some(Level {
-                                exchange: "binance".to_string(),
-                                price,
-                                amount,
-                            });
+                            if let Some(amount) = bid
+                                .get(1)
+                                .and_then(|v| v.as_str().and_then(|s| s.parse().ok()))
+                            {
+                                return Some(Level {
+                                    exchange: exchange.to_string(),
+                                    price,
+                                    amount,
+                                });
+                            }
                         }
-                    }
-                    None
-                })
-                .collect()
-        } else {
-            return None; // Return early if bids array is missing
-        };
+                        None
+                    })
+                    .collect()
+            } else {
+                return None; // Return early if bids array is missing
+            };
 
-        let asks: Vec<Level> = if let Some(asks) = result["asks"].as_array() {
-            asks.iter()
-                .filter_map(|ask| {
-                    if let Some(price) = ask
-                        .get(0)
-                        .and_then(|v| v.as_str().and_then(|s| s.parse().ok()))
-                    {
-                        if let Some(amount) = ask
-                            .get(1)
+            let asks: Vec<Level> = if let Some(asks) = data["asks"].as_array() {
+                asks.iter()
+                    .filter_map(|ask| {
+                        if let Some(price) = ask
+                            .get(0)
                             .and_then(|v| v.as_str().and_then(|s| s.parse().ok()))
                         {
-                            return Some(Level {
-                                exchange: "binance".to_string(),
-                                price,
-                                amount,
-                            });
+                            if let Some(amount) = ask
+                                .get(1)
+                                .and_then(|v| v.as_str().and_then(|s| s.parse().ok()))
+                            {
+                                return Some(Level {
+                                    exchange: exchange.to_string(),
+                                    price,
+                                    amount,
+                                });
+                            }
                         }
-                    }
-                    None
-                })
-                .collect()
+                        None
+                    })
+                    .collect()
+            } else {
+                return None; // Return early if asks array is missing
+            };
+
+            let spread = match (bids.first(), asks.first()) {
+                (Some(first_bid), Some(first_ask)) => first_ask.price - first_bid.price,
+                _ => 0.0, // Default value in case bids or asks are empty
+            };
+
+            let selected_bids = sort_and_select_levels(&bids, depth, false);
+            let selected_asks = sort_and_select_levels(&asks, depth, true);
+
+            // Return the selected bids and asks along with the actual number of levels selected
+            let order_book = OrderBook {
+                bids: selected_bids.to_vec(),
+                asks: selected_asks.to_vec(),
+                spread,
+            };
+
+            Some(order_book)
         } else {
-            return None; // Return early if asks array is missing
-        };
-
-        let spread = match (bids.first(), asks.first()) {
-            (Some(first_bid), Some(first_ask)) => first_ask.price - first_bid.price,
-            _ => 0.0, // Default value in case bids or asks are empty
-        };
-
-        let selected_bids = sort_and_select_levels(&bids, depth, false);
-        let selected_asks = sort_and_select_levels(&asks, depth, true);
-
-        // Return the selected bids and asks along with the actual number of levels selected
-        let order_book = OrderBook {
-            bids: selected_bids.to_vec(),
-            asks: selected_asks.to_vec(),
-            spread,
-        };
-
-        // println!("Binance Order Book {:#?}", order_book);
-        println!("Binance Order Book: ");
-        print_order_book(&order_book);
-
-        Some(order_book)
-    } else {
-        None // Return early if JSON deserialization fails
-    }
-}
-
-fn process_bitstamp_message(message_text: &str, depth: usize) -> Option<OrderBook> {
-    if let Ok(mut result) = serde_json::from_str::<Value>(message_text) {
-        result = result["data"].clone();
-        let bids: Vec<Level> = if let Some(bids) = result["bids"].as_array() {
-            bids.iter()
-                .filter_map(|bid| {
-                    if let Some(price) = bid
-                        .get(0)
-                        .and_then(|v| v.as_str().and_then(|s| s.parse().ok()))
-                    {
-                        if let Some(amount) = bid
-                            .get(1)
-                            .and_then(|v| v.as_str().and_then(|s| s.parse().ok()))
-                        {
-                            return Some(Level {
-                                exchange: "bitstamp".to_string(),
-                                price,
-                                amount,
-                            });
-                        }
-                    }
-                    None
-                })
-                .collect()
-        } else {
-            return None; // Return early if bids array is missing
-        };
-
-        let asks: Vec<Level> = if let Some(asks) = result["asks"].as_array() {
-            asks.iter()
-                .filter_map(|ask| {
-                    if let Some(price) = ask
-                        .get(0)
-                        .and_then(|v| v.as_str().and_then(|s| s.parse().ok()))
-                    {
-                        if let Some(amount) = ask
-                            .get(1)
-                            .and_then(|v| v.as_str().and_then(|s| s.parse().ok()))
-                        {
-                            return Some(Level {
-                                exchange: "bitstamp".to_string(),
-                                price,
-                                amount,
-                            });
-                        }
-                    }
-                    None
-                })
-                .collect()
-        } else {
-            return None; // Return early if asks array is missing
-        };
-
-        let spread = match (bids.first(), asks.first()) {
-            (Some(first_bid), Some(first_ask)) => first_ask.price - first_bid.price,
-            _ => 0.0, // Default value in case bids or asks are empty
-        };
-
-        let selected_bids = sort_and_select_levels(&bids, depth, false);
-        let selected_asks = sort_and_select_levels(&asks, depth, true);
-
-        // Return the selected bids and asks along with the actual number of levels selected
-        let order_book = OrderBook {
-            bids: selected_bids.to_vec(),
-            asks: selected_asks.to_vec(),
-            spread,
-        };
-
-        // println!("Bitstamp Order Book {:#?}", order_book);
-        println!("Bitstamp Order Book: ");
-        print_order_book(&order_book);
-
-        Some(order_book)
+            None // Return early if data is None
+        }
     } else {
         None // Return early if JSON deserialization fails
     }
 }
 
 fn process_message(exchange: &str, message_text: &str, depth: usize) -> Option<OrderBook> {
-    println!("Processing message for exchange: {}", exchange);
     match exchange {
-        "binance" => process_binance_message(message_text, depth),
-        "bitstamp" => process_bitstamp_message(message_text, depth),
+        "binance" => process_order_book_message(message_text, "binance", depth),
+        "bitstamp" => process_order_book_message(message_text, "bitstamp", depth),
         _ => {
             println!("Invalid exchange: {}", exchange);
             None
@@ -268,28 +199,58 @@ fn process_message(exchange: &str, message_text: &str, depth: usize) -> Option<O
     }
 }
 
-fn subscribe_to_streams(symbol: &str, depth: u32) {
+fn binance_connect(symbol: &str, depth: u32) -> WebSocket<AutoStream> {
     // Binance WebSocket server URL
     let binance_url =
         Url::parse("wss://stream.binance.com:9443/ws").expect("Failed to parse Binance URL");
 
-    // Bitstamp WebSocket server URL
-    let bitstamp_url = Url::parse("wss://ws.bitstamp.net/").expect("Failed to parse Bitstamp URL");
-
     // Connect to the Binance WebSocket server
     let (mut binance_socket, _) = connect(binance_url).expect("Failed to connect to Binance");
 
+    // Construct the Binance subscription message
+    let binance_message = format!(
+        r#"
+        {{
+            "method": "SUBSCRIBE",
+            "params": [
+                "{}@depth{}"
+            ],
+            "id": 1
+        }}
+        "#,
+        symbol, depth
+    );
+
+    // Send the subscription message as a text frame
+    binance_socket
+        .write_message(Message::Text(binance_message.into()))
+        .expect("Failed to send Binance subscription message");
+
+    // Read the first message from the socket
+    let first_message = binance_socket
+        .read_message()
+        .expect("Failed to receive the first message from Binance");
+
+    // Verify that the first message is a text frame
+    if let Message::Text(first_message_text) = first_message {
+        if first_message_text == "{\"result\":null,\"id\":1}" {
+            println!("Connected with Binance Stream successfully");
+        } else {
+            panic!("Failed to connect with Binance Stream");
+        }
+    } else {
+        panic!("Received an unexpected message type from Binance");
+    }
+
+    binance_socket
+}
+
+fn bitstamp_connect(symbol: &str) -> WebSocket<AutoStream> {
+    // Bitstamp WebSocket server URL
+    let bitstamp_url = Url::parse("wss://ws.bitstamp.net/").expect("Failed to parse Bitstamp URL");
+
     // Connect to the Bitstamp WebSocket server
     let (mut bitstamp_socket, _) = connect(bitstamp_url).expect("Failed to connect to Bitstamp");
-
-    // Construct the Binance subscription message
-    let binance_message = json!({
-        "method": "SUBSCRIBE",
-        "params": [
-            format!("{}@depth{}", symbol, depth)
-        ],
-        "id": 1
-    });
 
     // Construct the Bitstamp subscription message
     let bitstamp_channel = format!("detail_order_book_{}", symbol);
@@ -306,14 +267,31 @@ fn subscribe_to_streams(symbol: &str, depth: u32) {
     );
 
     // Send the subscription messages as text frames
-    binance_socket
-        .write_message(Message::Text(
-            serde_json::to_string(&binance_message).unwrap().into(),
-        ))
-        .expect("Failed to send Binance subscription message");
     bitstamp_socket
         .write_message(Message::Text(bitstamp_message.into()))
         .expect("Failed to send Bitstamp subscription message");
+
+    // Read the first message from the socket
+    let first_message = bitstamp_socket
+        .read_message()
+        .expect("Failed to receive the first message from Bitstamp");
+
+    if let Message::Text(first_message_text) = first_message {
+        if first_message_text == "{\"event\":\"bts:subscription_succeeded\",\"channel\":\"detail_order_book_btcusdt\",\"data\":{}}" {
+            println!("Connected with Bitstamp Stream successfully");
+        } else {
+            panic!("Failed to connect with Bitstamp Stream");
+        }
+    } else {
+        panic!("Received an unexpected message type from Bitstamp");
+    }
+
+    bitstamp_socket
+}
+
+fn subscribe_to_streams(symbol: &str, depth: u32) {
+    let mut binance_socket = binance_connect(symbol, depth);
+    let mut bitstamp_socket = bitstamp_connect(symbol);
 
     // Receive and handle messages from both WebSocket servers
     let mut binance_orderbook = OrderBook::new();
@@ -337,12 +315,11 @@ fn subscribe_to_streams(symbol: &str, depth: u32) {
                 bitstamp_orderbook = orderbook;
             }
         }
+
         println!("Binance OrderBook");
         print_order_book(&binance_orderbook);
         println!("Bitstamp OrderBook");
         print_order_book(&bitstamp_orderbook);
-
-        // merge orderbooks(binance_orderbook, bitstamp_orderbook, depth);
     }
 }
 
