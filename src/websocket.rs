@@ -36,7 +36,7 @@ async fn subscribe_to_binance_stream(symbol: String, depth: u32) {
 }
 
 #[allow(dead_code)]
-async fn subscribe_to_bitstamp_stream(symbol: String) {
+async fn subscribe_to_bitstamp_stream(symbol: String, depth: u32) {
     // WebSocket server URL
     let url = Url::parse("wss://ws.bitstamp.net/").expect("Failed to parse URL");
 
@@ -85,7 +85,7 @@ fn main() {
 
     // Spawn the tasks for subscribing to the streams concurrently
     rt.spawn(subscribe_to_binance_stream(symbol.clone(), depth));
-    rt.spawn(subscribe_to_bitstamp_stream(symbol));
+    rt.spawn(subscribe_to_bitstamp_stream(symbol.clone(), depth));
 
     // Run the tokio runtime
     rt.block_on(async {
