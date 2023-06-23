@@ -5,6 +5,7 @@ use url::Url;
 
 #[derive(Debug, Deserialize)]
 pub struct Level {
+    exchange: String,
     #[serde(rename = "p")]
     price: f64,
     #[serde(rename = "q")]
@@ -14,13 +15,13 @@ pub struct Level {
 impl Clone for Level {
     fn clone(&self) -> Self {
         Level {
+            exchange: self.exchange.clone(),
             price: self.price,
             amount: self.amount,
         }
     }
 }
 
-// #[derive(Debug, Deserialize)]
 #[derive(Debug, Deserialize)]
 pub struct OrderBook {
     #[serde(rename = "b")]
@@ -28,31 +29,52 @@ pub struct OrderBook {
     #[serde(rename = "a")]
     asks: Vec<Level>,
     #[serde(rename = "s")]
-    spread: f64, // Optional spread field
+    spread: f64,
+}
+
+impl OrderBook {
+    fn new() -> OrderBook {
+        OrderBook {
+            bids: Vec::new(),
+            asks: Vec::new(),
+            spread: 0.0,
+        }
+    }
 }
 
 fn print_order_book(order_book: &OrderBook) {
     println!("Spread: {:#?}", order_book.spread);
     println!(
-        "{:<6} {:<16} {:<16} | {:<16} {:<16}",
-        "Depth", "BidVolume", "BidPrice", "AskPrice", "AskVolume"
+        "{:<6} {:<12} {:<16} {:<12} | {:<12} {:<16} {:<12}",
+        "Depth", "BidExchange", "BidVolume", "BidPrice", "AskPrice", "AskVolume", "AskExchange"
     );
 
-    for (i, (bid, ask)) in order_book
-        .bids
-        .iter()
-        .zip(order_book.asks.iter())
-        .enumerate()
-    {
+    let max_levels = order_book.bids.len().max(order_book.asks.len());
+
+    for i in 0..max_levels {
+        let bid = order_book.bids.get(i);
+        let ask = order_book.asks.get(i);
+
+        let bid_exchange = bid.map(|b| b.exchange.clone()).unwrap_or("".to_string());
+        let bid_amount = bid.map(|b| b.amount.to_string()).unwrap_or("".to_string());
+        let bid_price = bid.map(|b| b.price.to_string()).unwrap_or("".to_string());
+
+        let ask_price = ask.map(|a| a.price.to_string()).unwrap_or("".to_string());
+        let ask_amount = ask.map(|a| a.amount.to_string()).unwrap_or("".to_string());
+        let ask_exchange = ask.map(|a| a.exchange.clone()).unwrap_or("".to_string());
+
         println!(
-            "{:<6} {:<16} {:<16} | {:<16} {:<16}",
+            "{:<6} {:<12} {:<16} {:<12} | {:<12} {:<16} {:<12}",
             format!("[{}]", i + 1),
-            bid.amount,
-            bid.price,
-            ask.price,
-            ask.amount
+            bid_exchange,
+            bid_amount,
+            bid_price,
+            ask_price,
+            ask_amount,
+            ask_exchange
         );
     }
+
     println!();
 }
 
@@ -92,7 +114,11 @@ fn process_binance_message(message_text: &str, depth: usize) -> Option<OrderBook
                             .get(1)
                             .and_then(|v| v.as_str().and_then(|s| s.parse().ok()))
                         {
-                            return Some(Level { price, amount });
+                            return Some(Level {
+                                exchange: "binance".to_string(),
+                                price,
+                                amount,
+                            });
                         }
                     }
                     None
@@ -113,7 +139,11 @@ fn process_binance_message(message_text: &str, depth: usize) -> Option<OrderBook
                             .get(1)
                             .and_then(|v| v.as_str().and_then(|s| s.parse().ok()))
                         {
-                            return Some(Level { price, amount });
+                            return Some(Level {
+                                exchange: "binance".to_string(),
+                                price,
+                                amount,
+                            });
                         }
                     }
                     None
@@ -162,7 +192,11 @@ fn process_bitstamp_message(message_text: &str, depth: usize) -> Option<OrderBoo
                             .get(1)
                             .and_then(|v| v.as_str().and_then(|s| s.parse().ok()))
                         {
-                            return Some(Level { price, amount });
+                            return Some(Level {
+                                exchange: "bitstamp".to_string(),
+                                price,
+                                amount,
+                            });
                         }
                     }
                     None
@@ -183,7 +217,11 @@ fn process_bitstamp_message(message_text: &str, depth: usize) -> Option<OrderBoo
                             .get(1)
                             .and_then(|v| v.as_str().and_then(|s| s.parse().ok()))
                         {
-                            return Some(Level { price, amount });
+                            return Some(Level {
+                                exchange: "bitstamp".to_string(),
+                                price,
+                                amount,
+                            });
                         }
                     }
                     None
@@ -230,7 +268,6 @@ fn process_message(exchange: &str, message_text: &str, depth: usize) -> Option<O
     }
 }
 
-#[allow(dead_code)]
 fn subscribe_to_streams(symbol: &str, depth: u32) {
     // Binance WebSocket server URL
     let binance_url =
@@ -279,20 +316,33 @@ fn subscribe_to_streams(symbol: &str, depth: u32) {
         .expect("Failed to send Bitstamp subscription message");
 
     // Receive and handle messages from both WebSocket servers
+    let mut binance_orderbook = OrderBook::new();
+    let mut bitstamp_orderbook = OrderBook::new();
+
     loop {
         let binance_msg = binance_socket
             .read_message()
             .expect("Failed to receive message from Binance");
         if let Ok(message_text) = binance_msg.to_text() {
-            process_message("binance", message_text, depth as usize);
+            if let Some(orderbook) = process_message("binance", message_text, depth as usize) {
+                binance_orderbook = orderbook;
+            }
         }
 
         let bitstamp_msg = bitstamp_socket
             .read_message()
             .expect("Failed to receive message from Bitstamp");
         if let Ok(message_text) = bitstamp_msg.to_text() {
-            process_message("bitstamp", message_text, depth as usize);
+            if let Some(orderbook) = process_message("bitstamp", message_text, depth as usize) {
+                bitstamp_orderbook = orderbook;
+            }
         }
+        println!("Binance OrderBook");
+        print_order_book(&binance_orderbook);
+        println!("Bitstamp OrderBook");
+        print_order_book(&bitstamp_orderbook);
+
+        // merge orderbooks(binance_orderbook, bitstamp_orderbook, depth);
     }
 }
 
