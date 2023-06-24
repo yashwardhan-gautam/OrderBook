@@ -79,7 +79,7 @@ fn print_order_book(order_book: &OrderBook) {
     println!();
 }
 
-fn sort_and_select_levels(levels: &[Level], depth: usize, ascending: bool) -> Vec<Level> {
+fn sort_and_trim_levels(levels: &[Level], depth: usize, ascending: bool) -> Vec<Level> {
     let mut sorted_levels = levels.to_vec();
 
     sorted_levels.sort_by(|a, b| {
@@ -163,12 +163,12 @@ fn process_message(message_text: &str, exchange: &str, depth: usize) -> Option<O
             };
 
             let spread = match (bids.first(), asks.first()) {
-                (Some(first_bid), Some(first_ask)) => first_ask.price - first_bid.price,
+                (Some(first_bid), Some(first_ask)) => first_bid.price - first_ask.price,
                 _ => 0.0, // Default value in case bids or asks are empty
             };
 
-            let selected_bids = sort_and_select_levels(&bids, depth, false);
-            let selected_asks = sort_and_select_levels(&asks, depth, true);
+            let selected_bids = sort_and_trim_levels(&bids, depth, false);
+            let selected_asks = sort_and_trim_levels(&asks, depth, true);
 
             // Return the selected bids and asks along with the actual number of levels selected
             let order_book = OrderBook {
@@ -183,6 +183,32 @@ fn process_message(message_text: &str, exchange: &str, depth: usize) -> Option<O
         }
     } else {
         None // Return early if JSON deserialization fails
+    }
+}
+
+fn merge_order_books(
+    binance_orderbook: &OrderBook,
+    bitstamp_orderbook: &OrderBook,
+    depth: usize,
+) -> OrderBook {
+    let mut merged_bids = binance_orderbook.bids.clone();
+    merged_bids.extend(bitstamp_orderbook.bids.iter().cloned());
+
+    let mut merged_asks = binance_orderbook.asks.clone();
+    merged_asks.extend(bitstamp_orderbook.asks.iter().cloned());
+
+    let sorted_bids = sort_and_trim_levels(&merged_bids, depth, false);
+    let sorted_asks = sort_and_trim_levels(&merged_asks, depth, true);
+
+    let spread = match (sorted_bids.first(), sorted_asks.first()) {
+        (Some(first_bid), Some(first_ask)) => first_bid.price - first_ask.price,
+        _ => 0.0,
+    };
+
+    OrderBook {
+        bids: sorted_bids,
+        asks: sorted_asks,
+        spread,
     }
 }
 
@@ -303,10 +329,15 @@ fn subscribe_to_streams(symbol: &str, depth: u32) {
             }
         }
 
-        println!("Binance OrderBook");
-        print_order_book(&binance_orderbook);
-        println!("Bitstamp OrderBook");
-        print_order_book(&bitstamp_orderbook);
+        // println!("Binance OrderBook");
+        // print_order_book(&binance_orderbook);
+        // println!("Bitstamp OrderBook");
+        // print_order_book(&bitstamp_orderbook);
+
+        let merged_orderbook =
+            merge_order_books(&binance_orderbook, &bitstamp_orderbook, depth as usize);
+        println!("Merged OrderBook");
+        print_order_book(&merged_orderbook);
     }
 }
 
