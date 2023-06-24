@@ -102,12 +102,10 @@ fn sort_and_select_levels(levels: &[Level], depth: usize, ascending: bool) -> Ve
     }
 }
 
-fn process_order_book_message(
-    message_text: &str,
-    exchange: &str,
-    depth: usize,
-) -> Option<OrderBook> {
+fn process_message(message_text: &str, exchange: &str, depth: usize) -> Option<OrderBook> {
     if let Ok(result) = serde_json::from_str::<Value>(message_text) {
+        // for bitstamp the "bids" and "asks" are inside "data" key
+        // whereas for binance we can directly access the "bids" and "asks"
         let mut data = result.get("data").cloned();
         if data.is_none() {
             data = Some(result);
@@ -185,17 +183,6 @@ fn process_order_book_message(
         }
     } else {
         None // Return early if JSON deserialization fails
-    }
-}
-
-fn process_message(exchange: &str, message_text: &str, depth: usize) -> Option<OrderBook> {
-    match exchange {
-        "binance" => process_order_book_message(message_text, "binance", depth),
-        "bitstamp" => process_order_book_message(message_text, "bitstamp", depth),
-        _ => {
-            println!("Invalid exchange: {}", exchange);
-            None
-        }
     }
 }
 
@@ -302,7 +289,7 @@ fn subscribe_to_streams(symbol: &str, depth: u32) {
             .read_message()
             .expect("Failed to receive message from Binance");
         if let Ok(message_text) = binance_msg.to_text() {
-            if let Some(orderbook) = process_message("binance", message_text, depth as usize) {
+            if let Some(orderbook) = process_message(message_text, "binance", depth as usize) {
                 binance_orderbook = orderbook;
             }
         }
@@ -311,7 +298,7 @@ fn subscribe_to_streams(symbol: &str, depth: u32) {
             .read_message()
             .expect("Failed to receive message from Bitstamp");
         if let Ok(message_text) = bitstamp_msg.to_text() {
-            if let Some(orderbook) = process_message("bitstamp", message_text, depth as usize) {
+            if let Some(orderbook) = process_message(message_text, "bitstamp", depth as usize) {
                 bitstamp_orderbook = orderbook;
             }
         }
