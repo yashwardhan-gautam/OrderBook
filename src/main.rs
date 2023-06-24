@@ -43,18 +43,18 @@ impl OrderBook {
     }
 }
 
-fn print_order_book(order_book: &OrderBook) {
-    println!("Spread: {:#?}", order_book.spread);
+fn print_orderbook(orderbook: &OrderBook) {
+    println!("Spread: {:#?}", orderbook.spread);
     println!(
         "{:<6} {:<12} {:<16} {:<12} | {:<12} {:<16} {:<12}",
         "Depth", "BidExchange", "BidVolume", "BidPrice", "AskPrice", "AskVolume", "AskExchange"
     );
 
-    let max_levels = order_book.bids.len().max(order_book.asks.len());
+    let max_levels = orderbook.bids.len().max(orderbook.asks.len());
 
     for i in 0..max_levels {
-        let bid = order_book.bids.get(i);
-        let ask = order_book.asks.get(i);
+        let bid = orderbook.bids.get(i);
+        let ask = orderbook.asks.get(i);
 
         let bid_exchange = bid.map(|b| b.exchange.clone()).unwrap_or("".to_string());
         let bid_amount = bid.map(|b| b.amount.to_string()).unwrap_or("".to_string());
@@ -171,13 +171,13 @@ fn process_message(message_text: &str, exchange: &str, depth: usize) -> Option<O
             let selected_asks = sort_and_trim_levels(&asks, depth, true);
 
             // Return the selected bids and asks along with the actual number of levels selected
-            let order_book = OrderBook {
+            let orderbook = OrderBook {
                 bids: selected_bids.to_vec(),
                 asks: selected_asks.to_vec(),
                 spread,
             };
 
-            Some(order_book)
+            Some(orderbook)
         } else {
             None // Return early if data is None
         }
@@ -186,7 +186,7 @@ fn process_message(message_text: &str, exchange: &str, depth: usize) -> Option<O
     }
 }
 
-fn merge_order_books(
+fn merge_orderbooks(
     binance_orderbook: &OrderBook,
     bitstamp_orderbook: &OrderBook,
     depth: usize,
@@ -290,7 +290,7 @@ fn bitstamp_connect(symbol: &str) -> WebSocket<AutoStream> {
         .expect("Failed to receive the first message from Bitstamp");
 
     if let Message::Text(first_message_text) = first_message {
-        if first_message_text == "{\"event\":\"bts:subscription_succeeded\",\"channel\":\"detail_order_book_btcusdt\",\"data\":{}}" {
+        if first_message_text.as_str() == &format!("{{\"event\":\"bts:subscription_succeeded\",\"channel\":\"detail_order_book_{}\",\"data\":{{}}}}", symbol) {
             println!("Connected with Bitstamp Stream successfully");
         } else {
             panic!("Failed to connect with Bitstamp Stream");
@@ -330,14 +330,14 @@ fn subscribe_to_streams(symbol: &str, depth: u32) {
         }
 
         // println!("Binance OrderBook");
-        // print_order_book(&binance_orderbook);
+        // print_orderbook(&binance_orderbook);
         // println!("Bitstamp OrderBook");
-        // print_order_book(&bitstamp_orderbook);
+        // print_orderbook(&bitstamp_orderbook);
 
         let merged_orderbook =
-            merge_order_books(&binance_orderbook, &bitstamp_orderbook, depth as usize);
+            merge_orderbooks(&binance_orderbook, &bitstamp_orderbook, depth as usize);
         println!("Merged OrderBook");
-        print_order_book(&merged_orderbook);
+        print_orderbook(&merged_orderbook);
     }
 }
 
