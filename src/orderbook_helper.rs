@@ -6,9 +6,9 @@ use url::Url;
 
 #[derive(Debug, Deserialize)]
 pub struct Level {
-    exchange: String,
-    price: f64,
-    amount: f64,
+    pub exchange: String,
+    pub price: f64,
+    pub amount: f64,
 }
 
 impl Clone for Level {
@@ -23,9 +23,9 @@ impl Clone for Level {
 
 #[derive(Debug, Deserialize)]
 pub struct OrderBook {
-    bids: Vec<Level>,
-    asks: Vec<Level>,
-    spread: f64,
+    pub bids: Vec<Level>,
+    pub asks: Vec<Level>,
+    pub spread: f64,
 }
 
 impl OrderBook {

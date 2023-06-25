@@ -18,6 +18,11 @@ priority-queue = "1.3"
 tokio-tungstenite = "0.15"
 tonic = "0.9"
 prost = "0.11"
+futures = "0.3"
+tokio-stream = "0.1.13"
 
 [build-dependencies]
 tonic-build = "0.9"
+
+[build]
+build = "build.rs"
