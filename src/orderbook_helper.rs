@@ -21,7 +21,7 @@ impl Clone for Level {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct OrderBook {
     pub bids: Vec<Level>,
     pub asks: Vec<Level>,
