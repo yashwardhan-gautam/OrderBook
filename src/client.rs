@@ -4,60 +4,55 @@ pub mod orderbook {
 
 use orderbook::orderbook_aggregator_client::OrderbookAggregatorClient;
 use orderbook::{Empty, Summary};
-use tonic::transport::Channel;
 
-#[allow(dead_code)]
 fn print_summary(summary: &Summary) {
-    println!("Spread: {}", summary.spread);
+    println!("Spread: {:#?}", summary.spread);
+    println!(
+        "{:<6} {:<12} {:<16} {:<12} | {:<12} {:<16} {:<12}",
+        "Depth", "BidExchange", "BidVolume", "BidPrice", "AskPrice", "AskVolume", "AskExchange"
+    );
 
-    println!("Bids:");
-    for bid in &summary.bids {
-        println!("Exchange: {}", bid.exchange);
-        println!("Price: {}", bid.price);
-        println!("Amount: {}", bid.amount);
-        println!();
+    let max_levels = summary.bids.len().max(summary.asks.len());
+
+    for i in 0..max_levels {
+        let bid = summary.bids.get(i);
+        let ask = summary.asks.get(i);
+
+        let bid_exchange = bid.map(|b| b.exchange.clone()).unwrap_or("".to_string());
+        let bid_amount = bid.map(|b| b.amount.to_string()).unwrap_or("".to_string());
+        let bid_price = bid.map(|b| b.price.to_string()).unwrap_or("".to_string());
+
+        let ask_price = ask.map(|a| a.price.to_string()).unwrap_or("".to_string());
+        let ask_amount = ask.map(|a| a.amount.to_string()).unwrap_or("".to_string());
+        let ask_exchange = ask.map(|a| a.exchange.clone()).unwrap_or("".to_string());
+
+        println!(
+            "{:<6} {:<12} {:<16} {:<12} | {:<12} {:<16} {:<12}",
+            format!("[{}]", i + 1),
+            bid_exchange,
+            bid_amount,
+            bid_price,
+            ask_price,
+            ask_amount,
+            ask_exchange
+        );
     }
 
-    println!("Asks:");
-    for ask in &summary.asks {
-        println!("Exchange: {}", ask.exchange);
-        println!("Price: {}", ask.price);
-        println!("Amount: {}", ask.amount);
-        println!();
-    }
-}
-
-async fn read_book_summaries(
-    server_address: &'static str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // Connect to the server
-    let channel = Channel::from_static(server_address).connect().await?;
-
-    // Create a gRPC client
-    let mut client = OrderbookAggregatorClient::new(channel);
-
-    // Create an empty request
-    let request = tonic::Request::new(Empty {});
-
-    // Call the server's book_summary method to receive a stream of book summaries
-    let mut stream = client.book_summary(request).await?.into_inner();
-
-    // Read book summaries from the stream
-    while let Some(summary) = stream.message().await? {
-        // Process the received summary
-        println!("Received book summary:");
-        print_summary(&summary);
-        println!("-------------------------");
-    }
-
-    Ok(())
+    println!();
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let server_address = "http://localhost:50051";
+    let addr = "http://localhost:50051";
 
-    read_book_summaries(server_address).await?;
-
-    Ok(())
+    let mut client = OrderbookAggregatorClient::connect(addr).await?;
+    loop {
+        let request = tonic::Request::new(Empty {});
+        let mut stream = client.book_summary(request).await?.into_inner();
+        while let Some(summary) = stream.message().await? {
+            // Process the received summary here
+            println!("Orderbook received: ");
+            print_summary(&summary);
+        }
+    }
 }

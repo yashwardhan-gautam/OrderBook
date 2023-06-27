@@ -38,15 +38,14 @@ impl OrderbookAggregator for OrderbookAggregatorService {
         let binance_socket = self.binance_socket.clone().map(|s| Arc::clone(&s));
         let bitstamp_socket = self.bitstamp_socket.clone().map(|s| Arc::clone(&s));
 
-        let subscription_result =
-            subscribe_to_streams(sender, depth, binance_socket, bitstamp_socket).await;
+        tokio::spawn(async move {
+            let subscription_result =
+                subscribe_to_streams(sender, depth, binance_socket, bitstamp_socket).await;
 
-        if let Err(err) = subscription_result {
-            return Err(Status::new(
-                Code::Internal,
-                format!("Error during subscription: {}", err),
-            ));
-        }
+            if let Err(err) = subscription_result {
+                eprintln!("Error during subscription: {}", err);
+            }
+        });
 
         let stream = tokio_stream::wrappers::ReceiverStream::new(receiver).map(
             |result: Result<Summary, ()>| {
@@ -121,27 +120,15 @@ async fn subscribe_to_streams(
 
     let merged_orderbook =
         merge_orderbooks(&binance_orderbook, &bitstamp_orderbook, depth as usize);
-    println!("Merged orderbook:");
+    println!("Orderbook Sent:");
     print_orderbook(&merged_orderbook);
 
     let summary = orderbook_to_summary(&merged_orderbook);
 
-    if sender.send(Ok(summary.clone())).await.is_err() {
-        return Err(Box::new(Status::new(
-            Code::Internal,
-            "Failed to send initial summary",
-        )));
+    if let Err(err) = sender.send(Ok(summary)).await {
+        return Err(Box::new(err));
     }
-
-    loop {
-        let updated_summary = orderbook_to_summary(&merged_orderbook);
-        if sender.send(Ok(updated_summary.clone())).await.is_err() {
-            return Err(Box::new(Status::new(
-                Code::Internal,
-                "Failed to send updated summary",
-            )));
-        }
-    }
+    Ok(())
 }
 
 #[tokio::main]
@@ -157,9 +144,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr = "0.0.0.0:50051".parse()?;
 
-    println!("gRPC server listening on {}", addr);
     let binance_socket = binance_connect(&symbol, depth).await?;
     let bitstamp_socket = bitstamp_connect(&symbol).await?;
+    println!("gRPC server listening on {}", addr);
     let orderbook_aggregator = OrderbookAggregatorService {
         depth,
         binance_socket: Some(Arc::new(Mutex::new(binance_socket))),
