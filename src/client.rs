@@ -46,13 +46,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "http://localhost:50051";
 
     let mut client = OrderbookAggregatorClient::connect(addr).await?;
-    loop {
-        let request = tonic::Request::new(Empty {});
-        let mut stream = client.book_summary(request).await?.into_inner();
-        while let Some(summary) = stream.message().await? {
-            // Process the received summary here
-            println!("Orderbook received: ");
-            print_summary(&summary);
-        }
+
+    // Create a request
+    let request = tonic::Request::new(Empty {});
+
+    // Call the server's RPC method and obtain the response stream
+    let mut stream = client.book_summary(request).await?.into_inner();
+
+    // Receive and process the streamed data
+    while let Some(summary) = stream.message().await? {
+        // Print the received summary
+        println!("Orderbook received:");
+        print_summary(&summary);
     }
+
+    Ok(())
 }

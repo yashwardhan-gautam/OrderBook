@@ -8,13 +8,13 @@ pub mod orderbook {
     tonic::include_proto!("orderbook");
 }
 
-use futures::future::ready;
 use futures::stream::{Stream, StreamExt};
 use orderbook::orderbook_aggregator_server::{OrderbookAggregator, OrderbookAggregatorServer};
 use orderbook::{Empty, Level, Summary};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, RwLock};
+use tokio::task::spawn_blocking;
 use tonic::{transport::Server, Code, Request, Response, Status};
 use tungstenite::client::AutoStream;
 use tungstenite::WebSocket;
@@ -113,36 +113,47 @@ async fn process_socket_messages(
     let mut binance_orderbook = OrderBook::new();
     let mut bitstamp_orderbook = OrderBook::new();
 
-    loop {
-        tokio::select! {
-            binance_msg = ready(binance_socket.as_ref().unwrap().lock().unwrap().read_message()) => {
-                if let Ok(message) = binance_msg {
-                    if let Ok(message_text) = message.to_text() {
-                        if let Some(new_orderbook) = process_message(message_text, "binance", depth as usize) {
-                            binance_orderbook = new_orderbook.clone();
-                            let merged_orderbook = merge_orderbooks(&new_orderbook, &bitstamp_orderbook, depth as usize);
-                            *orderbook.write().await = merged_orderbook.clone();
-                            print_orderbook(&merged_orderbook);
-                            sender.send(Ok(orderbook_to_summary(&merged_orderbook))).await?;
-                        }
-                    }
+    while let (Some(binance_socket), Some(bitstamp_socket)) =
+        (binance_socket.clone(), bitstamp_socket.clone())
+    {
+        let binance_msg =
+            spawn_blocking(move || binance_socket.lock().unwrap().read_message()).await?;
+        if let Ok(message) = binance_msg {
+            if let Ok(message_text) = message.to_text() {
+                if let Some(new_orderbook) =
+                    process_message(message_text, "binance", depth as usize)
+                {
+                    binance_orderbook = new_orderbook.clone();
+                    let merged_orderbook =
+                        merge_orderbooks(&new_orderbook, &bitstamp_orderbook, depth as usize);
+                    *orderbook.write().await = merged_orderbook.clone();
+                    print_orderbook(&merged_orderbook);
+                    let summary = orderbook_to_summary(&merged_orderbook);
+                    sender.try_send(Ok(summary)).unwrap();
                 }
-            },
-            bitstamp_msg = ready(bitstamp_socket.as_ref().unwrap().lock().unwrap().read_message()) => {
-                if let Ok(message) = bitstamp_msg {
-                    if let Ok(message_text) = message.to_text() {
-                        if let Some(new_orderbook) = process_message(message_text, "bitstamp", depth as usize) {
-                            bitstamp_orderbook = new_orderbook.clone();
-                            let merged_orderbook = merge_orderbooks(&binance_orderbook, &new_orderbook, depth as usize);
-                            *orderbook.write().await = merged_orderbook.clone();
-                            print_orderbook(&merged_orderbook);
-                            sender.send(Ok(orderbook_to_summary(&merged_orderbook))).await?;
-                        }
-                    }
+            }
+        }
+
+        let bitstamp_msg =
+            spawn_blocking(move || bitstamp_socket.lock().unwrap().read_message()).await?;
+        if let Ok(message) = bitstamp_msg {
+            if let Ok(message_text) = message.to_text() {
+                if let Some(new_orderbook) =
+                    process_message(message_text, "bitstamp", depth as usize)
+                {
+                    bitstamp_orderbook = new_orderbook.clone();
+                    let merged_orderbook =
+                        merge_orderbooks(&binance_orderbook, &new_orderbook, depth as usize);
+                    *orderbook.write().await = merged_orderbook.clone();
+                    print_orderbook(&merged_orderbook);
+                    let summary = orderbook_to_summary(&merged_orderbook);
+                    sender.try_send(Ok(summary)).unwrap();
                 }
-            },
+            }
         }
     }
+
+    Ok(())
 }
 
 #[tokio::main]
