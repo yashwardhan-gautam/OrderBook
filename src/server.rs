@@ -1,6 +1,7 @@
 mod orderbook_helper;
 use orderbook_helper::{
-    binance_connect, bitstamp_connect, merge_orderbooks, process_message, OrderBook,
+    binance_connect, bitstamp_connect, merge_orderbooks, print_orderbook, process_message,
+    OrderBook,
 };
 
 pub mod orderbook {
@@ -13,15 +14,15 @@ use orderbook::orderbook_aggregator_server::{OrderbookAggregator, OrderbookAggre
 use orderbook::{Empty, Level, Summary};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use tokio::sync::{mpsc, RwLock};
 use tonic::{transport::Server, Code, Request, Response, Status};
 use tungstenite::client::AutoStream;
 use tungstenite::WebSocket;
 
-use crate::orderbook_helper::print_orderbook;
-
 #[derive(Default, Clone)]
 struct OrderbookAggregatorService {
     depth: u32,
+    merged_orderbook: Arc<RwLock<OrderBook>>,
     binance_socket: Option<Arc<Mutex<WebSocket<AutoStream>>>>,
     bitstamp_socket: Option<Arc<Mutex<WebSocket<AutoStream>>>>,
 }
@@ -35,10 +36,11 @@ impl OrderbookAggregator for OrderbookAggregatorService {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<Self::BookSummaryStream>, Status> {
-        let (sender, receiver) = tokio::sync::mpsc::channel(100);
+        let (sender, receiver) = mpsc::channel(100);
         let depth = self.depth;
         let binance_socket = self.binance_socket.clone().map(|s| Arc::clone(&s));
         let bitstamp_socket = self.bitstamp_socket.clone().map(|s| Arc::clone(&s));
+        let merged_orderbook = Arc::clone(&self.merged_orderbook);
 
         let summary_sender = sender.clone();
         let binance_socket_clone = binance_socket.clone();
@@ -50,6 +52,7 @@ impl OrderbookAggregator for OrderbookAggregatorService {
                 depth,
                 binance_socket_clone,
                 bitstamp_socket_clone,
+                merged_orderbook,
             )
             .await;
 
@@ -105,58 +108,20 @@ async fn process_socket_messages(
     depth: u32,
     binance_socket: Option<Arc<Mutex<WebSocket<AutoStream>>>>,
     bitstamp_socket: Option<Arc<Mutex<WebSocket<AutoStream>>>>,
+    orderbook: Arc<RwLock<OrderBook>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut binance_orderbook = OrderBook::new();
     let mut bitstamp_orderbook = OrderBook::new();
-    let mut merged_orderbook: OrderBook;
-
-    if let Some(binance_socket) = &binance_socket {
-        let binance_msg = binance_socket.lock().unwrap().read_message()?;
-        if let Ok(message_text) = binance_msg.to_text() {
-            if let Some(orderbook) = process_message(message_text, "binance", depth as usize) {
-                binance_orderbook = orderbook;
-                merged_orderbook =
-                    merge_orderbooks(&binance_orderbook, &bitstamp_orderbook, depth as usize);
-                println!("MergedOrderbook1:");
-                print_orderbook(&merged_orderbook);
-                sender
-                    .send(Ok(orderbook_to_summary(&merged_orderbook)))
-                    .await?;
-            }
-        }
-    }
-
-    if let Some(bitstamp_socket) = &bitstamp_socket {
-        let bitstamp_msg = bitstamp_socket.lock().unwrap().read_message()?;
-        if let Ok(message_text) = bitstamp_msg.to_text() {
-            if let Some(orderbook) = process_message(message_text, "bitstamp", depth as usize) {
-                bitstamp_orderbook = orderbook;
-                merged_orderbook =
-                    merge_orderbooks(&binance_orderbook, &bitstamp_orderbook, depth as usize);
-                println!("MergedOrderbook2:");
-                print_orderbook(&merged_orderbook);
-                sender
-                    .send(Ok(orderbook_to_summary(&merged_orderbook)))
-                    .await?;
-            }
-        }
-    }
-
-    let binance_socket = binance_socket.clone();
-    let bitstamp_socket = bitstamp_socket.clone();
 
     loop {
         tokio::select! {
             binance_msg = ready(binance_socket.as_ref().unwrap().lock().unwrap().read_message()) => {
                 if let Ok(message) = binance_msg {
                     if let Ok(message_text) = message.to_text() {
-                        if let Some(orderbook) =
-                            process_message(message_text, "binance", depth as usize)
-                        {
-                            binance_orderbook = orderbook;
-                            merged_orderbook =
-                                merge_orderbooks(&binance_orderbook, &bitstamp_orderbook, depth as usize);
-                            println!("MergedOrderbook3:");
+                        if let Some(new_orderbook) = process_message(message_text, "binance", depth as usize) {
+                            binance_orderbook = new_orderbook.clone();
+                            let merged_orderbook = merge_orderbooks(&new_orderbook, &bitstamp_orderbook, depth as usize);
+                            *orderbook.write().await = merged_orderbook.clone();
                             print_orderbook(&merged_orderbook);
                             sender.send(Ok(orderbook_to_summary(&merged_orderbook))).await?;
                         }
@@ -166,13 +131,10 @@ async fn process_socket_messages(
             bitstamp_msg = ready(bitstamp_socket.as_ref().unwrap().lock().unwrap().read_message()) => {
                 if let Ok(message) = bitstamp_msg {
                     if let Ok(message_text) = message.to_text() {
-                        if let Some(orderbook) =
-                            process_message(message_text, "bitstamp", depth as usize)
-                        {
-                            bitstamp_orderbook = orderbook;
-                            merged_orderbook =
-                                merge_orderbooks(&binance_orderbook, &bitstamp_orderbook, depth as usize);
-                            println!("MergedOrderbook4:");
+                        if let Some(new_orderbook) = process_message(message_text, "bitstamp", depth as usize) {
+                            bitstamp_orderbook = new_orderbook.clone();
+                            let merged_orderbook = merge_orderbooks(&binance_orderbook, &new_orderbook, depth as usize);
+                            *orderbook.write().await = merged_orderbook.clone();
                             print_orderbook(&merged_orderbook);
                             sender.send(Ok(orderbook_to_summary(&merged_orderbook))).await?;
                         }
@@ -198,10 +160,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let binance_socket = binance_connect(&symbol, depth).await?;
     let bitstamp_socket = bitstamp_connect(&symbol).await?;
+    let merged_orderbook = Arc::new(RwLock::new(OrderBook::new()));
 
     println!("gRPC server listening on {}", addr);
     let orderbook_aggregator = OrderbookAggregatorService {
         depth,
+        merged_orderbook: Arc::clone(&merged_orderbook),
         binance_socket: Some(Arc::new(Mutex::new(binance_socket))),
         bitstamp_socket: Some(Arc::new(Mutex::new(bitstamp_socket))),
     };
