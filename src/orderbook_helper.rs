@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use serde_json::Value;
+use std::error::Error;
 use tungstenite::client::AutoStream;
 use tungstenite::{connect, Message, WebSocket};
 use url::Url;
@@ -207,7 +208,10 @@ pub fn merge_orderbooks(
     }
 }
 
-pub fn binance_connect(symbol: &str, depth: u32) -> WebSocket<AutoStream> {
+pub async fn binance_connect(
+    symbol: &str,
+    depth: u32,
+) -> Result<WebSocket<AutoStream>, Box<dyn Error>> {
     // Binance WebSocket server URL
     let binance_url =
         Url::parse("wss://stream.binance.com:9443/ws").expect("Failed to parse Binance URL");
@@ -250,10 +254,10 @@ pub fn binance_connect(symbol: &str, depth: u32) -> WebSocket<AutoStream> {
         panic!("Received an unexpected message type from Binance");
     }
 
-    binance_socket
+    Ok(binance_socket)
 }
 
-pub fn bitstamp_connect(symbol: &str) -> WebSocket<AutoStream> {
+pub async fn bitstamp_connect(symbol: &str) -> Result<WebSocket<AutoStream>, Box<dyn Error>> {
     // Bitstamp WebSocket server URL
     let bitstamp_url = Url::parse("wss://ws.bitstamp.net/").expect("Failed to parse Bitstamp URL");
 
@@ -285,7 +289,12 @@ pub fn bitstamp_connect(symbol: &str) -> WebSocket<AutoStream> {
         .expect("Failed to receive the first message from Bitstamp");
 
     if let Message::Text(first_message_text) = first_message {
-        if first_message_text.as_str() == &format!("{{\"event\":\"bts:subscription_succeeded\",\"channel\":\"detail_order_book_{}\",\"data\":{{}}}}", symbol) {
+        if first_message_text.as_str()
+            == &format!(
+                "{{\"event\":\"bts:subscription_succeeded\",\"channel\":\"detail_order_book_{}\",\"data\":{{}}}}",
+                symbol
+            )
+        {
             println!("Connected with Bitstamp Stream successfully");
         } else {
             panic!("Failed to connect with Bitstamp Stream");
@@ -294,5 +303,5 @@ pub fn bitstamp_connect(symbol: &str) -> WebSocket<AutoStream> {
         panic!("Received an unexpected message type from Bitstamp");
     }
 
-    bitstamp_socket
+    Ok(bitstamp_socket)
 }

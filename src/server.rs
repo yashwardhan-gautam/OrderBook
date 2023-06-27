@@ -8,16 +8,20 @@ pub mod orderbook {
     tonic::include_proto!("orderbook");
 }
 
-use futures::stream::{Stream, StreamExt}; // Add this import
+use futures::stream::{Stream, StreamExt};
 use orderbook::orderbook_aggregator_server::{OrderbookAggregator, OrderbookAggregatorServer};
 use orderbook::{Empty, Level, Summary};
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use tonic::{transport::Server, Code, Request, Response, Status};
+use tungstenite::client::AutoStream;
+use tungstenite::WebSocket;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct OrderbookAggregatorService {
-    symbol: String,
     depth: u32,
+    binance_socket: Option<Arc<Mutex<WebSocket<AutoStream>>>>,
+    bitstamp_socket: Option<Arc<Mutex<WebSocket<AutoStream>>>>,
 }
 
 #[tonic::async_trait]
@@ -30,10 +34,12 @@ impl OrderbookAggregator for OrderbookAggregatorService {
         _request: Request<Empty>,
     ) -> Result<Response<Self::BookSummaryStream>, Status> {
         let (sender, receiver) = tokio::sync::mpsc::channel(100);
-        let symbol = self.symbol.clone();
         let depth = self.depth;
+        let binance_socket = self.binance_socket.clone().map(|s| Arc::clone(&s));
+        let bitstamp_socket = self.bitstamp_socket.clone().map(|s| Arc::clone(&s));
 
-        let subscription_result = subscribe_to_streams(sender, &symbol, depth).await;
+        let subscription_result =
+            subscribe_to_streams(sender, depth, binance_socket, bitstamp_socket).await;
 
         if let Err(err) = subscription_result {
             return Err(Status::new(
@@ -50,27 +56,6 @@ impl OrderbookAggregator for OrderbookAggregatorService {
 
         let response_stream: Self::BookSummaryStream = Box::pin(stream);
         Ok(Response::new(response_stream))
-    }
-}
-
-#[allow(dead_code)]
-fn print_summary(summary: &Summary) {
-    println!("Spread: {}", summary.spread);
-
-    println!("Bids:");
-    for bid in &summary.bids {
-        println!("Exchange: {}", bid.exchange);
-        println!("Price: {}", bid.price);
-        println!("Amount: {}", bid.amount);
-        println!();
-    }
-
-    println!("Asks:");
-    for ask in &summary.asks {
-        println!("Exchange: {}", ask.exchange);
-        println!("Price: {}", ask.price);
-        println!("Amount: {}", ask.amount);
-        println!();
     }
 }
 
@@ -107,48 +92,56 @@ fn orderbook_to_summary(orderbook: &OrderBook) -> Summary {
 
 async fn subscribe_to_streams(
     sender: tokio::sync::mpsc::Sender<Result<Summary, ()>>,
-    symbol: &str,
     depth: u32,
+    binance_socket: Option<Arc<Mutex<WebSocket<AutoStream>>>>,
+    bitstamp_socket: Option<Arc<Mutex<WebSocket<AutoStream>>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut binance_socket = binance_connect(symbol, depth);
-    let mut bitstamp_socket = bitstamp_connect(symbol);
-
-    // Receive and handle messages from both WebSocket servers
     let mut binance_orderbook = OrderBook::new();
     let mut bitstamp_orderbook = OrderBook::new();
 
-    let merged_orderbook;
-
-    // Read orderbook data only once
-    if let Ok(binance_msg) = binance_socket.read_message() {
-        if let Ok(message_text) = binance_msg.to_text() {
-            if let Some(orderbook) = process_message(message_text, "binance", depth as usize) {
-                binance_orderbook = orderbook;
+    if let Some(binance_socket) = binance_socket {
+        if let Ok(binance_msg) = binance_socket.lock().unwrap().read_message() {
+            if let Ok(message_text) = binance_msg.to_text() {
+                if let Some(orderbook) = process_message(message_text, "binance", depth as usize) {
+                    binance_orderbook = orderbook;
+                }
             }
         }
     }
 
-    if let Ok(bitstamp_msg) = bitstamp_socket.read_message() {
-        if let Ok(message_text) = bitstamp_msg.to_text() {
-            if let Some(orderbook) = process_message(message_text, "bitstamp", depth as usize) {
-                bitstamp_orderbook = orderbook;
+    if let Some(bitstamp_socket) = bitstamp_socket {
+        if let Ok(bitstamp_msg) = bitstamp_socket.lock().unwrap().read_message() {
+            if let Ok(message_text) = bitstamp_msg.to_text() {
+                if let Some(orderbook) = process_message(message_text, "bitstamp", depth as usize) {
+                    bitstamp_orderbook = orderbook;
+                }
             }
         }
     }
 
-    merged_orderbook = merge_orderbooks(&binance_orderbook, &bitstamp_orderbook, depth as usize);
+    let merged_orderbook =
+        merge_orderbooks(&binance_orderbook, &bitstamp_orderbook, depth as usize);
     println!("Merged orderbook:");
     print_orderbook(&merged_orderbook);
 
-    // Convert the merged orderbook to a summary
     let summary = orderbook_to_summary(&merged_orderbook);
 
-    // Send the summary through the channel
-    if let Err(err) = sender.send(Ok(summary)).await {
-        return Err(Box::new(err));
+    if sender.send(Ok(summary.clone())).await.is_err() {
+        return Err(Box::new(Status::new(
+            Code::Internal,
+            "Failed to send initial summary",
+        )));
     }
 
-    Ok(())
+    loop {
+        let updated_summary = orderbook_to_summary(&merged_orderbook);
+        if sender.send(Ok(updated_summary.clone())).await.is_err() {
+            return Err(Box::new(Status::new(
+                Code::Internal,
+                "Failed to send updated summary",
+            )));
+        }
+    }
 }
 
 #[tokio::main]
@@ -163,9 +156,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let depth = args.get(2).and_then(|d| d.parse().ok()).unwrap_or(10);
 
     let addr = "0.0.0.0:50051".parse()?;
-    let orderbook_aggregator = OrderbookAggregatorService { symbol, depth };
 
     println!("gRPC server listening on {}", addr);
+    let binance_socket = binance_connect(&symbol, depth).await?;
+    let bitstamp_socket = bitstamp_connect(&symbol).await?;
+    let orderbook_aggregator = OrderbookAggregatorService {
+        depth,
+        binance_socket: Some(Arc::new(Mutex::new(binance_socket))),
+        bitstamp_socket: Some(Arc::new(Mutex::new(bitstamp_socket))),
+    };
 
     Server::builder()
         .add_service(OrderbookAggregatorServer::new(orderbook_aggregator))
