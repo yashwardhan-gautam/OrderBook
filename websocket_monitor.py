@@ -5,18 +5,20 @@ import time
 import sys
 
 
-async def monitor_binance_endpoint(symbol, depth):
+async def monitor_binance_endpoint(symbol, depth=10):
     endpoint = "wss://stream.binance.com:9443/ws"
     binance_url = f"{endpoint}/{symbol.lower()}@depth{depth}@1000ms"
 
     message_count = 0
     start_time = time.time()
 
-    async with websockets.connect(binance_url) as websocket:
+    async with websockets.connect(binance_url) as websocket:  # type: ignore
         while True:
             message = await websocket.recv()
-            
-            # print(f"Binance Message: {message}")
+
+            # Process the received message as needed
+            # ...
+
             message_count += 1
             elapsed_time = time.time() - start_time
 
@@ -42,13 +44,12 @@ async def monitor_bitstamp_endpoint(symbol):
     message_count = 0
     start_time = time.time()
 
-    async with websockets.connect(bitstamp_url) as websocket:
+    async with websockets.connect(bitstamp_url) as websocket:  # type: ignore
         await websocket.send(bitstamp_message)
 
         while True:
             message = await websocket.recv()
-            
-            # print(f"Bitstamp Message: {message}")
+
             message_count += 1
             elapsed_time = time.time() - start_time
 
@@ -63,16 +64,18 @@ async def monitor_bitstamp_endpoint(symbol):
 
 # Usage example
 if len(sys.argv) < 3:
-    print("Usage: python websocket_monitor.py [exchange] [symbol]")
+    print("Usage: python websocket_monitor.py [exchange] [symbol] [depth]")
     sys.exit(1)
 
 exchange = sys.argv[1]
 symbol = sys.argv[2]
+depth = int(sys.argv[3]) if len(sys.argv) >= 4 else 10
 
 if exchange == "binance":
-    depth = 10
-    asyncio.get_event_loop().run_until_complete(monitor_binance_endpoint(symbol, depth))
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(monitor_binance_endpoint(symbol, depth))
 elif exchange == "bitstamp":
-    asyncio.get_event_loop().run_until_complete(monitor_bitstamp_endpoint(symbol))
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(monitor_bitstamp_endpoint(symbol))
 else:
     print("Invalid exchange. Supported exchanges: binance, bitstamp")
