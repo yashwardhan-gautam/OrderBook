@@ -220,12 +220,13 @@ pub async fn binance_connect(
     let (mut binance_socket, _) = connect(binance_url).expect("Failed to connect to Binance");
 
     // Construct the Binance subscription message
+    // binance support two update speeds - 1000ms or 100ms
     let binance_message = format!(
         r#"
         {{
             "method": "SUBSCRIBE",
             "params": [
-                "{}@depth{}"
+                "{}@depth{}@100ms"
             ],
             "id": 1
         }}
