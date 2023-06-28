@@ -5,27 +5,17 @@ use tungstenite::client::AutoStream;
 use tungstenite::{connect, Message, WebSocket};
 use url::Url;
 
-#[derive(Debug, Deserialize)]
-pub struct Level {
+#[derive(Debug, Deserialize, Clone)]
+pub struct PriceAmountLevel {
     pub exchange: String,
     pub price: f64,
     pub amount: f64,
 }
 
-impl Clone for Level {
-    fn clone(&self) -> Self {
-        Level {
-            exchange: self.exchange.clone(),
-            price: self.price,
-            amount: self.amount,
-        }
-    }
-}
-
 #[derive(Debug, Default, Deserialize, Clone)]
 pub struct OrderBook {
-    pub bids: Vec<Level>,
-    pub asks: Vec<Level>,
+    pub bids: Vec<PriceAmountLevel>,
+    pub asks: Vec<PriceAmountLevel>,
     pub spread: f64,
 }
 
@@ -75,7 +65,11 @@ pub fn print_orderbook(orderbook: &OrderBook) {
     println!();
 }
 
-fn sort_and_trim_levels(levels: &[Level], depth: usize, ascending: bool) -> Vec<Level> {
+fn sort_and_trim_levels(
+    levels: &[PriceAmountLevel],
+    depth: usize,
+    ascending: bool,
+) -> Vec<PriceAmountLevel> {
     let mut sorted_levels = levels.to_vec();
 
     sorted_levels.sort_by(|a, b| {
@@ -108,7 +102,7 @@ pub fn process_message(message_text: &str, exchange: &str, depth: usize) -> Opti
         }
 
         if let Some(data) = data {
-            let bids: Vec<Level> = if let Some(bids) = data["bids"].as_array() {
+            let bids: Vec<PriceAmountLevel> = if let Some(bids) = data["bids"].as_array() {
                 bids.iter()
                     .filter_map(|bid| {
                         if let Some(price) = bid
@@ -119,7 +113,7 @@ pub fn process_message(message_text: &str, exchange: &str, depth: usize) -> Opti
                                 .get(1)
                                 .and_then(|v| v.as_str().and_then(|s| s.parse().ok()))
                             {
-                                return Some(Level {
+                                return Some(PriceAmountLevel {
                                     exchange: exchange.to_string(),
                                     price,
                                     amount,
@@ -133,7 +127,7 @@ pub fn process_message(message_text: &str, exchange: &str, depth: usize) -> Opti
                 return None; // Return early if bids array is missing
             };
 
-            let asks: Vec<Level> = if let Some(asks) = data["asks"].as_array() {
+            let asks: Vec<PriceAmountLevel> = if let Some(asks) = data["asks"].as_array() {
                 asks.iter()
                     .filter_map(|ask| {
                         if let Some(price) = ask
@@ -144,7 +138,7 @@ pub fn process_message(message_text: &str, exchange: &str, depth: usize) -> Opti
                                 .get(1)
                                 .and_then(|v| v.as_str().and_then(|s| s.parse().ok()))
                             {
-                                return Some(Level {
+                                return Some(PriceAmountLevel {
                                     exchange: exchange.to_string(),
                                     price,
                                     amount,
@@ -240,13 +234,13 @@ pub async fn binance_connect(
         .expect("Failed to send Binance subscription message");
 
     // Read the first message from the socket
-    let first_message = binance_socket
+    let connection_message = binance_socket
         .read_message()
         .expect("Failed to receive the first message from Binance");
 
     // Verify that the first message is a text frame
-    if let Message::Text(first_message_text) = first_message {
-        if first_message_text == "{\"result\":null,\"id\":1}" {
+    if let Message::Text(connection_message_text) = connection_message {
+        if connection_message_text == "{\"result\":null,\"id\":1}" {
             println!("Connected with Binance Stream successfully");
         } else {
             panic!("Failed to connect with Binance Stream");
@@ -285,12 +279,12 @@ pub async fn bitstamp_connect(symbol: &str) -> Result<WebSocket<AutoStream>, Box
         .expect("Failed to send Bitstamp subscription message");
 
     // Read the first message from the socket
-    let first_message = bitstamp_socket
+    let connection_message = bitstamp_socket
         .read_message()
         .expect("Failed to receive the first message from Bitstamp");
 
-    if let Message::Text(first_message_text) = first_message {
-        if first_message_text.as_str()
+    if let Message::Text(connection_message_text) = connection_message {
+        if connection_message_text.as_str()
             == &format!(
                 "{{\"event\":\"bts:subscription_succeeded\",\"channel\":\"detail_order_book_{}\",\"data\":{{}}}}",
                 symbol
@@ -305,4 +299,228 @@ pub async fn bitstamp_connect(symbol: &str) -> Result<WebSocket<AutoStream>, Box
     }
 
     Ok(bitstamp_socket)
+}
+
+// Unit test cases
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_print_orderbook() {
+        let orderbook = OrderBook {
+            bids: vec![
+                PriceAmountLevel {
+                    exchange: "exchange1".to_string(),
+                    price: 10.0,
+                    amount: 1.0,
+                },
+                PriceAmountLevel {
+                    exchange: "exchange2".to_string(),
+                    price: 9.5,
+                    amount: 2.0,
+                },
+            ],
+            asks: vec![
+                PriceAmountLevel {
+                    exchange: "exchange3".to_string(),
+                    price: 11.0,
+                    amount: 0.8,
+                },
+                PriceAmountLevel {
+                    exchange: "exchange4".to_string(),
+                    price: 11.5,
+                    amount: 0.7,
+                },
+            ],
+            spread: 0.5,
+        };
+
+        print_orderbook(&orderbook);
+    }
+
+    #[test]
+    fn test_sort_and_trim_levels() {
+        let levels = vec![
+            PriceAmountLevel {
+                exchange: "exchange1".to_string(),
+                price: 10.0,
+                amount: 1.0,
+            },
+            PriceAmountLevel {
+                exchange: "exchange2".to_string(),
+                price: 9.5,
+                amount: 2.0,
+            },
+            PriceAmountLevel {
+                exchange: "exchange3".to_string(),
+                price: 11.0,
+                amount: 0.8,
+            },
+        ];
+
+        let sorted_levels = sort_and_trim_levels(&levels, 2, true);
+
+        assert_eq!(sorted_levels.len(), 2);
+        assert_eq!(sorted_levels[0].price, 9.5);
+        assert_eq!(sorted_levels[1].price, 10.0);
+    }
+
+    #[test]
+    fn test_process_message() {
+        let message_text = r#"
+            {
+                "data": {
+                    "bids": [
+                        [ "10.0", "1.0" ],
+                        [ "9.5", "2.0" ]
+                    ],
+                    "asks": [
+                        [ "11.0", "0.8" ],
+                        [ "11.5", "0.7" ]
+                    ]
+                }
+            }
+        "#;
+
+        let exchange = "exchange1";
+        let depth = 2;
+
+        let orderbook = process_message(message_text, exchange, depth).unwrap();
+
+        assert_eq!(orderbook.bids.len(), 2);
+
+        assert_eq!(orderbook.bids[0].exchange, "exchange1");
+        assert_eq!(orderbook.bids[0].price, 10.0);
+        assert_eq!(orderbook.bids[0].amount, 1.0);
+
+        assert_eq!(orderbook.bids[1].exchange, "exchange1");
+        assert_eq!(orderbook.bids[1].price, 9.5);
+        assert_eq!(orderbook.bids[1].amount, 2.0);
+
+        // Assert the ask levels
+        assert_eq!(orderbook.asks.len(), 2);
+
+        assert_eq!(orderbook.asks[0].exchange, "exchange1");
+        assert_eq!(orderbook.asks[0].price, 11.0);
+        assert_eq!(orderbook.asks[0].amount, 0.8);
+
+        assert_eq!(orderbook.asks[1].exchange, "exchange1");
+        assert_eq!(orderbook.asks[1].price, 11.5);
+        assert_eq!(orderbook.asks[1].amount, 0.7);
+
+        // Assert the spread value
+        assert_eq!(orderbook.spread, -1.0);
+    }
+
+    #[test]
+    fn test_merge_orderbooks() {
+        let binance_orderbook = OrderBook {
+            bids: vec![
+                PriceAmountLevel {
+                    exchange: "binance".to_string(),
+                    price: 10.0,
+                    amount: 1.0,
+                },
+                PriceAmountLevel {
+                    exchange: "binance".to_string(),
+                    price: 9.5,
+                    amount: 2.0,
+                },
+            ],
+            asks: vec![
+                PriceAmountLevel {
+                    exchange: "binance".to_string(),
+                    price: 11.0,
+                    amount: 0.8,
+                },
+                PriceAmountLevel {
+                    exchange: "binance".to_string(),
+                    price: 11.5,
+                    amount: 0.7,
+                },
+            ],
+            spread: 0.5,
+        };
+
+        let bitstamp_orderbook = OrderBook {
+            bids: vec![
+                PriceAmountLevel {
+                    exchange: "bitstamp".to_string(),
+                    price: 10.2,
+                    amount: 0.9,
+                },
+                PriceAmountLevel {
+                    exchange: "bitstamp".to_string(),
+                    price: 9.8,
+                    amount: 1.5,
+                },
+            ],
+            asks: vec![
+                PriceAmountLevel {
+                    exchange: "bitstamp".to_string(),
+                    price: 11.2,
+                    amount: 0.6,
+                },
+                PriceAmountLevel {
+                    exchange: "bitstamp".to_string(),
+                    price: 11.8,
+                    amount: 0.4,
+                },
+            ],
+            spread: 0.6,
+        };
+
+        let depth = 3;
+
+        let merged_orderbook = merge_orderbooks(&binance_orderbook, &bitstamp_orderbook, depth);
+
+        assert_eq!(merged_orderbook.bids.len(), 3);
+        assert_eq!(merged_orderbook.asks.len(), 3);
+
+        // Assert the bid levels
+        assert_eq!(merged_orderbook.bids[0].exchange, "bitstamp");
+        assert_eq!(merged_orderbook.bids[0].price, 10.2);
+        assert_eq!(merged_orderbook.bids[0].amount, 0.9);
+
+        assert_eq!(merged_orderbook.bids[1].exchange, "binance");
+        assert_eq!(merged_orderbook.bids[1].price, 10.0);
+        assert_eq!(merged_orderbook.bids[1].amount, 1.0);
+
+        assert_eq!(merged_orderbook.bids[2].exchange, "bitstamp");
+        assert_eq!(merged_orderbook.bids[2].price, 9.8);
+        assert_eq!(merged_orderbook.bids[2].amount, 1.5);
+
+        // Assert the ask levels
+        assert_eq!(merged_orderbook.asks[0].exchange, "binance");
+        assert_eq!(merged_orderbook.asks[0].price, 11.0);
+        assert_eq!(merged_orderbook.asks[0].amount, 0.8);
+
+        assert_eq!(merged_orderbook.asks[1].exchange, "bitstamp");
+        assert_eq!(merged_orderbook.asks[1].price, 11.2);
+        assert_eq!(merged_orderbook.asks[1].amount, 0.6);
+
+        assert_eq!(merged_orderbook.asks[2].exchange, "binance");
+        assert_eq!(merged_orderbook.asks[2].price, 11.5);
+        assert_eq!(merged_orderbook.asks[2].amount, 0.7);
+    }
+
+    #[tokio::test]
+    async fn test_binance_connect() {
+        let symbol = "BTCUSDT";
+        let depth = 5;
+
+        let result = binance_connect(symbol, depth).await;
+
+        assert_eq!(result.is_ok(), true);
+    }
+
+    #[tokio::test]
+    async fn test_bitstamp_connect() {
+        let symbol = "btcusd";
+
+        let result = bitstamp_connect(symbol).await;
+
+        assert_eq!(result.is_ok(), true);
+    }
 }

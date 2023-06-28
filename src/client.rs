@@ -1,9 +1,9 @@
 pub mod orderbook {
     tonic::include_proto!("orderbook");
 }
-
 use orderbook::orderbook_aggregator_client::OrderbookAggregatorClient;
 use orderbook::{Empty, Summary};
+use tonic::Request;
 
 fn print_summary(summary: &Summary) {
     println!("Spread: {:#?}", summary.spread);
@@ -47,10 +47,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut client = OrderbookAggregatorClient::connect(addr).await?;
     loop {
-        let request = tonic::Request::new(Empty {});
+        let request = Request::new(Empty {});
         let mut stream = client.book_summary(request).await?.into_inner();
         while let Some(summary) = stream.message().await? {
-            // Process the received summary here
             println!("Orderbook received: ");
             print_summary(&summary);
         }
