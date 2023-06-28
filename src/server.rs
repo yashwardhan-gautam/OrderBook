@@ -15,9 +15,9 @@ use orderbook_proto::orderbook_aggregator_server::{
 use orderbook_proto::{Empty, Level, Summary};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use tokio::spawn;
 use tokio::sync::mpsc::{channel, Sender};
 use tokio::task::spawn_blocking;
-use tokio::{select, spawn};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{transport::Server, Code, Request, Response, Status};
 use tungstenite::client::AutoStream;
@@ -66,58 +66,53 @@ pub async fn process_socket_messages(
     while let (Some(binance_socket), Some(bitstamp_socket)) =
         (binance_socket.clone(), bitstamp_socket.clone())
     {
-        select! {
-            binance_msg = spawn_blocking({
-                let binance_socket = binance_socket.clone();
-                move || -> Result<Message, Error> {
-                    let mut binance_socket = binance_socket.lock().unwrap();
-                    binance_socket.read_message().map_err(Into::into)
-                }
-            }) => {
-                if let Ok(message) = binance_msg? {
-                    let message_text = message.to_text().unwrap_or("");
-                    if let Some(new_orderbook) =
-                        process_message(message_text, "binance", depth as usize)
-                    {
-                        let mut binance_orderbook = binance_orderbook.lock().unwrap();
-                        *binance_orderbook = new_orderbook.clone();
-                        let merged_orderbook = merge_orderbooks(
-                            &new_orderbook,
-                            &bitstamp_orderbook.lock().unwrap(),
-                            depth as usize,
-                        );
-                        println!("Orderbook updated by Binance:");
-                        print_orderbook(&merged_orderbook);
-                        let summary = orderbook_to_summary(&merged_orderbook);
-                        sender.try_send(Ok(summary)).unwrap();
-                    }
-                }
+        let binance_msg = spawn_blocking({
+            let binance_socket = binance_socket.clone();
+            move || -> Result<Message, Error> {
+                let mut binance_socket = binance_socket.lock().unwrap();
+                binance_socket.read_message().map_err(Into::into)
             }
-            bitstamp_msg = spawn_blocking({
-                let bitstamp_socket = bitstamp_socket.clone();
-                move || -> Result<Message, Error> {
-                    let mut bitstamp_socket = bitstamp_socket.lock().unwrap();
-                    bitstamp_socket.read_message().map_err(Into::into)
-                }
-            }) => {
-                if let Ok(message) = bitstamp_msg? {
-                    let message_text = message.to_text().unwrap_or("");
-                    if let Some(new_orderbook) =
-                        process_message(message_text, "bitstamp", depth as usize)
-                    {
-                        let mut bitstamp_orderbook = bitstamp_orderbook.lock().unwrap();
-                        *bitstamp_orderbook = new_orderbook.clone();
-                        let merged_orderbook = merge_orderbooks(
-                            &binance_orderbook.lock().unwrap(),
-                            &new_orderbook,
-                            depth as usize,
-                        );
-                        println!("Orderbook updated by Bitstamp:");
-                        print_orderbook(&merged_orderbook);
-                        let summary = orderbook_to_summary(&merged_orderbook);
-                        sender.try_send(Ok(summary)).unwrap();
-                    }
-                }
+        });
+
+        let bitstamp_msg = spawn_blocking({
+            let bitstamp_socket = bitstamp_socket.clone();
+            move || -> Result<Message, Error> {
+                let mut bitstamp_socket = bitstamp_socket.lock().unwrap();
+                bitstamp_socket.read_message().map_err(Into::into)
+            }
+        });
+
+        if let Ok(message) = binance_msg.await? {
+            let message_text = message.to_text().unwrap_or("");
+            if let Some(new_orderbook) = process_message(message_text, "binance", depth as usize) {
+                let mut binance_orderbook = binance_orderbook.lock().unwrap();
+                *binance_orderbook = new_orderbook.clone();
+                let merged_orderbook = merge_orderbooks(
+                    &new_orderbook,
+                    &bitstamp_orderbook.lock().unwrap(),
+                    depth as usize,
+                );
+                println!("Orderbook updated by Binance:");
+                print_orderbook(&merged_orderbook);
+                let summary = orderbook_to_summary(&merged_orderbook);
+                sender.try_send(Ok(summary)).unwrap();
+            }
+        }
+
+        if let Ok(message) = bitstamp_msg.await? {
+            let message_text = message.to_text().unwrap_or("");
+            if let Some(new_orderbook) = process_message(message_text, "bitstamp", depth as usize) {
+                let mut bitstamp_orderbook = bitstamp_orderbook.lock().unwrap();
+                *bitstamp_orderbook = new_orderbook.clone();
+                let merged_orderbook = merge_orderbooks(
+                    &binance_orderbook.lock().unwrap(),
+                    &new_orderbook,
+                    depth as usize,
+                );
+                println!("Orderbook updated by Bitstamp:");
+                print_orderbook(&merged_orderbook);
+                let summary = orderbook_to_summary(&merged_orderbook);
+                sender.try_send(Ok(summary)).unwrap();
             }
         }
     }
