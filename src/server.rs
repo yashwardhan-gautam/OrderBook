@@ -21,7 +21,7 @@ use tokio::task::spawn_blocking;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{transport::Server, Code, Request, Response, Status};
 use tungstenite::client::AutoStream;
-use tungstenite::{Error, Message, WebSocket};
+use tungstenite::{Error, WebSocket};
 
 fn orderbook_to_summary(orderbook: &OrderBook) -> Summary {
     let mut summary = Summary::default();
@@ -55,7 +55,7 @@ fn orderbook_to_summary(orderbook: &OrderBook) -> Summary {
 }
 
 pub async fn process_socket_messages(
-    sender: Sender<Result<Summary, ()>>,
+    sender: Arc<Mutex<Sender<Result<Summary, ()>>>>,
     depth: u32,
     binance_socket: Option<Arc<Mutex<WebSocket<AutoStream>>>>,
     bitstamp_socket: Option<Arc<Mutex<WebSocket<AutoStream>>>>,
@@ -63,59 +63,83 @@ pub async fn process_socket_messages(
     let binance_orderbook = Arc::new(Mutex::new(OrderBook::new()));
     let bitstamp_orderbook = Arc::new(Mutex::new(OrderBook::new()));
 
-    while let (Some(binance_socket), Some(bitstamp_socket)) =
-        (binance_socket.clone(), bitstamp_socket.clone())
-    {
-        let binance_msg = spawn_blocking({
-            let binance_socket = binance_socket.clone();
-            move || -> Result<Message, Error> {
-                let mut binance_socket = binance_socket.lock().unwrap();
-                binance_socket.read_message().map_err(Into::into)
-            }
-        });
-
-        let bitstamp_msg = spawn_blocking({
-            let bitstamp_socket = bitstamp_socket.clone();
-            move || -> Result<Message, Error> {
-                let mut bitstamp_socket = bitstamp_socket.lock().unwrap();
-                bitstamp_socket.read_message().map_err(Into::into)
-            }
-        });
-
-        if let Ok(message) = binance_msg.await? {
-            let message_text = message.to_text().unwrap_or("");
-            if let Some(new_orderbook) = process_message(message_text, "binance", depth as usize) {
-                let mut binance_orderbook = binance_orderbook.lock().unwrap();
-                *binance_orderbook = new_orderbook.clone();
-                let merged_orderbook = merge_orderbooks(
-                    &new_orderbook,
-                    &bitstamp_orderbook.lock().unwrap(),
-                    depth as usize,
-                );
-                println!("Orderbook updated by Binance:");
-                print_orderbook(&merged_orderbook);
-                let summary = orderbook_to_summary(&merged_orderbook);
-                sender.try_send(Ok(summary)).unwrap();
-            }
-        }
-
-        if let Ok(message) = bitstamp_msg.await? {
-            let message_text = message.to_text().unwrap_or("");
-            if let Some(new_orderbook) = process_message(message_text, "bitstamp", depth as usize) {
-                let mut bitstamp_orderbook = bitstamp_orderbook.lock().unwrap();
-                *bitstamp_orderbook = new_orderbook.clone();
-                let merged_orderbook = merge_orderbooks(
-                    &binance_orderbook.lock().unwrap(),
-                    &new_orderbook,
-                    depth as usize,
-                );
-                println!("Orderbook updated by Bitstamp:");
-                print_orderbook(&merged_orderbook);
-                let summary = orderbook_to_summary(&merged_orderbook);
-                sender.try_send(Ok(summary)).unwrap();
+    let binance_task = spawn_blocking({
+        let binance_orderbook_clone = Arc::clone(&binance_orderbook);
+        let bitstamp_orderbook_clone = Arc::clone(&bitstamp_orderbook);
+        let sender_clone = Arc::clone(&sender);
+        move || {
+            if let Some(binance_socket) = binance_socket {
+                while let Ok(message) = {
+                    let mut binance_socket = binance_socket.lock().unwrap();
+                    binance_socket
+                        .read_message()
+                        .map_err::<Error, _>(Into::into)
+                } {
+                    let message_text = message.to_text().unwrap_or("");
+                    if let Some(new_orderbook) =
+                        process_message(message_text, "binance", depth as usize)
+                    {
+                        let mut binance_orderbook = binance_orderbook_clone.lock().unwrap();
+                        *binance_orderbook = new_orderbook.clone();
+                        let merged_orderbook = merge_orderbooks(
+                            &new_orderbook,
+                            &bitstamp_orderbook_clone.lock().unwrap(),
+                            depth as usize,
+                        );
+                        println!("Orderbook updated by Binance:");
+                        print_orderbook(&merged_orderbook);
+                        let summary = orderbook_to_summary(&merged_orderbook);
+                        sender_clone
+                            .lock()
+                            .unwrap()
+                            .try_send(Ok(summary.clone()))
+                            .unwrap();
+                    }
+                }
             }
         }
-    }
+    });
+
+    let bitstamp_task = spawn_blocking({
+        let binance_orderbook_clone = Arc::clone(&binance_orderbook);
+        let bitstamp_orderbook_clone = Arc::clone(&bitstamp_orderbook);
+        let sender_clone = Arc::clone(&sender);
+        move || {
+            if let Some(bitstamp_socket) = bitstamp_socket {
+                while let Ok(message) = {
+                    let mut bitstamp_socket = bitstamp_socket.lock().unwrap();
+                    bitstamp_socket
+                        .read_message()
+                        .map_err::<Error, _>(Into::into)
+                } {
+                    let message_text = message.to_text().unwrap_or("");
+                    if let Some(new_orderbook) =
+                        process_message(message_text, "bitstamp", depth as usize)
+                    {
+                        let mut bitstamp_orderbook = bitstamp_orderbook_clone.lock().unwrap();
+                        *bitstamp_orderbook = new_orderbook.clone();
+                        let merged_orderbook = merge_orderbooks(
+                            &binance_orderbook_clone.lock().unwrap(),
+                            &new_orderbook,
+                            depth as usize,
+                        );
+                        println!("Orderbook updated by Bitstamp:");
+                        print_orderbook(&merged_orderbook);
+                        let summary = orderbook_to_summary(&merged_orderbook);
+                        sender_clone
+                            .lock()
+                            .unwrap()
+                            .try_send(Ok(summary.clone()))
+                            .unwrap();
+                    }
+                }
+            }
+        }
+    });
+
+    // Await both tasks to complete
+    binance_task.await?;
+    bitstamp_task.await?;
 
     Ok(())
 }
@@ -143,7 +167,7 @@ impl OrderbookAggregator for OrderbookAggregatorService {
         let binance_socket = self.binance_socket.clone().map(|s| Arc::clone(&s));
         let bitstamp_socket = self.bitstamp_socket.clone().map(|s| Arc::clone(&s));
 
-        let summary_sender = sender.clone();
+        let summary_sender = Arc::new(Mutex::new(sender.clone()));
         let binance_socket_clone = binance_socket.clone();
         let bitstamp_socket_clone = bitstamp_socket.clone();
 

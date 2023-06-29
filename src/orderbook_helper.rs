@@ -220,7 +220,7 @@ pub async fn binance_connect(
         {{
             "method": "SUBSCRIBE",
             "params": [
-                "{}@depth{}"
+                "{}@depth{}@100ms"
             ],
             "id": 1
         }}
