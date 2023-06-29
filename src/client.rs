@@ -46,12 +46,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = "http://localhost:50051";
 
     let mut client = OrderbookAggregatorClient::connect(addr).await?;
-    loop {
-        let request = Request::new(Empty {});
-        let mut stream = client.book_summary(request).await?.into_inner();
-        while let Some(summary) = stream.message().await? {
-            println!("Orderbook received: ");
-            print_summary(&summary);
-        }
+
+    let request = Request::new(Empty {});
+    let mut stream = client.book_summary(request).await?.into_inner();
+
+    while let Some(summary) = stream.message().await? {
+        println!("Orderbook received: ");
+        print_summary(&summary);
     }
+
+    Ok(())
 }
